@@ -1,0 +1,23 @@
+纯净打印 / Pure Print
+Copyright 2026 The Pure Print Authors
+
+This product is licensed under the Apache License, Version 2.0.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Third-party software notices, including full license texts for all direct
+and transitive dependencies listed in pubspec.lock, are provided in:
+
+    assets/licenses/THIRD_PARTY_NOTICES.txt
+
+Bundled font:
+    assets/fonts/DroidSansFallbackFull.ttf
+    Source: Android Open Source Project (AOSP), platform/frameworks/base,
+            tag android-4.4.4_r2
+    License: Apache License 2.0
+
+This project is an independent implementation based on open standards
+(IPP / RFC 8011, mDNS / RFC 6763, AirPrint raster printing). It contains no
+code, assets, UI, trademarks or private SDKs from any commercial printing
+application, and is not affiliated with or endorsed by any printer vendor.

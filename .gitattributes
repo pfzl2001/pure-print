@@ -1,0 +1,17 @@
+# 统一使用 LF,避免 Windows 检出时把 Dart/CMake/许可文本改成 CRLF
+* text=auto eol=lf
+
+# 二进制资源不做换行转换与 diff
+*.ttf binary
+*.otf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.apk binary
+*.dll binary
+*.exe binary
+*.zip binary
+*.tgz binary
+*.jks binary
+*.keystore binary
