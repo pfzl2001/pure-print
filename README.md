@@ -6,6 +6,19 @@
 
 ---
 
+## 下载安装包
+
+二进制安装包**不放在 Git 仓库里**（`dist/` 已 gitignore），统一发布在 [GitHub Releases](https://github.com/pfzl2001/pure-print/releases)：
+
+- **Windows x64**：下载 `pure_print-windows-vX.Y.Z-x64.zip`，解压后直接运行 `pure_print.exe`，无需安装。
+- **Android**：下载 `pure_print-vX.Y.Z-arm64.apk`（仅 arm64-v8a），安装时需允许「未知来源」。
+
+每个 Release 附带 `SHA256SUMS.txt`，可用 `sha256sum -c SHA256SUMS.txt` 校验。APK 为本地调试签名，仅供自用/测试；正式发布请自行配置签名密钥。
+
+如需自行构建，见下方「构建」章节。
+
+---
+
 ## 主要功能
 
 | 类别 | 能力 |

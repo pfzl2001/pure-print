@@ -8,6 +8,7 @@
 .vscode/
 
 # ---- 开源仓库:不提交构建产物、交付包、密钥与本机配置 ----
+# 二进制安装包走 GitHub Releases 发布,不进 Git(避免仓库膨胀与签名包误公开)
 /dist/
 build/
 **/build/
