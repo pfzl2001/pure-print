@@ -24,6 +24,11 @@ tool/_test_*.pdf
 selftest_result.txt
 .env
 .env.*
+
+# 云盘同步工具生成的临时占位文件
+*.baiduyun.uploading.cfg
+*.onedrive.uploading.cfg
+~$*
 .atom/
 .build/
 .buildlog/
