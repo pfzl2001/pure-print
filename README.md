@@ -56,6 +56,25 @@
 
 ---
 
+## 自动发版
+
+`.github/workflows/release.yml` 配置了 GitHub Actions，**推送 `v*` tag 即自动构建并发布 Release**：
+
+```bash
+git tag v1.8.1
+git push origin v1.8.1
+```
+
+流水线包含三个 job：
+
+1. `build-android`（ubuntu-latest）：JDK 17 + Flutter 3.50.0 → 静态分析、三组回归测试 → `flutter build apk --release --split-per-abi --target-platform android-arm64`。
+2. `build-windows`（windows-latest）：预下载两版 pdfium → `tool/patch_windows_plugins.py` 修补插件 CMake（避免 `pdfx` 与 `printing` 的 `download_project` 前缀冲突）→ `flutter build windows --release` → 打包便携 zip。
+3. `publish`：汇总两个产物、生成 `SHA256SUMS.txt`、创建 Release 并上传。
+
+也可以到 Actions 页面手动运行 `Release` workflow：默认 `publish=false`，**只构建、不发布**（用于验证 CI）；需要发布时把 `publish` 设为 true 并填写 `test_tag`。
+
+> 普通的 `git push`（不带 tag）**不会**触发发版，只更新源码。
+
 ## 构建
 
 ### 环境
@@ -86,7 +105,7 @@ flutter build windows --release
 
 两个已知的构建期问题及处理：
 
-- `pdfx` 与 `printing` 插件会在 CMake configure 阶段下载各自版本的 pdfium。离线环境可预下载 tgz 并通过 `PUREPRINT_LOCAL_PDFIUM` / `PUREPRINT_LOCAL_PDFIUM_PRINTING` 指向本地文件（补丁作用于 pub cache 中对应插件的 `windows/CMakeLists.txt`，不属于本仓库）。
+- `pdfx` 与 `printing` 插件会在 CMake configure 阶段各自下载不同版本的 pdfium，且默认共用同一个 `download_project` 前缀而互相冲突。仓库提供 `tool/patch_windows_plugins.py`（幂等）：在 `flutter pub get` 之后执行它会修补 pub cache 中两个插件的 `windows/CMakeLists.txt`，并支持用 `PUREPRINT_LOCAL_PDFIUM` / `PUREPRINT_LOCAL_PDFIUM_PRINTING` 指向预下载的 tgz。CI 已自动执行该脚本。
 - 中文 Windows（代码页 936）下插件源码可能触发 C4819 并被 `/WX` 升级为错误。项目 `windows/CMakeLists.txt` 已添加 `/utf-8 /wd4819`，并固定 `CMAKE_INSTALL_PREFIX` 到构建目录，保证运行包自包含。
 
 ### 自检（真实 Windows exe，端到端）

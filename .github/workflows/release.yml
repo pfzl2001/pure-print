@@ -1,0 +1,193 @@
+name: Release
+
+# 发版触发方式:
+#   git tag v1.8.1 && git push origin v1.8.1
+# 也可以在 Actions 页面手动运行(workflow_dispatch),默认只构建不发布。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish a GitHub Release (otherwise build artifacts only)'
+        type: boolean
+        default: false
+      test_tag:
+        description: 'Tag name to use when publishing from a manual run'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: '3.50.0'
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.test_tag || 'ci-build' }}
+
+jobs:
+  build-android:
+    name: Android arm64 APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Static analysis and regression tests
+        run: |
+          dart analyze lib
+          dart run tool/test_layout.dart
+          dart run tool/test_drop_files.dart
+          dart run tool/test_office_font.dart
+
+      - name: Build arm64 APK
+        run: flutter build apk --release --split-per-abi --target-platform android-arm64
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+             "out/pure_print-${RELEASE_TAG}-arm64.apk"
+          ls -lh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: out/*.apk
+          if-no-files-found: error
+
+  build-windows:
+    name: Windows x64 zip
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # pdfx 与 printing 在 CMake configure 阶段各自下载不同版本的 pdfium,
+      # 且默认共用同一个 download_project 前缀。预下载 + 补丁让构建稳定可复现。
+      - name: Prefetch pdfium binaries
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'pdfium'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $targets = @(
+            @{ Uri = 'https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/4690/pdfium-win-x64.tgz'; File = 'pdfium-4690.tgz' },
+            @{ Uri = 'https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/5200/pdfium-win-x64.tgz'; File = 'pdfium-5200.tgz' }
+          )
+          foreach ($t in $targets) {
+            $dest = Join-Path $dir $t.File
+            curl.exe -fL --retry 3 --retry-delay 5 -o $dest $t.Uri
+            if ($LASTEXITCODE -ne 0) { throw "pdfium download failed: $($t.Uri)" }
+            $size = (Get-Item $dest).Length
+            if ($size -lt 100000) { throw "pdfium archive looks truncated: $dest ($size bytes)" }
+            Write-Host "$($t.File): $size bytes"
+          }
+
+      - name: Patch plugin CMake files
+        shell: pwsh
+        run: python tool/patch_windows_plugins.py
+
+      - name: Build Windows release
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'pdfium'
+          $env:PUREPRINT_LOCAL_PDFIUM = (Join-Path $dir 'pdfium-4690.tgz').Replace('\','/')
+          $env:PUREPRINT_LOCAL_PDFIUM_PRINTING = (Join-Path $dir 'pdfium-5200.tgz').Replace('\','/')
+          flutter build windows --release
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $src = 'build\windows\x64\runner\Release\*'
+          $zip = "out\pure_print-$env:RELEASE_TAG-windows-x64.zip"
+          Compress-Archive -Path $src -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: out/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build-android, build-windows]
+    if: github.event_name == 'push' || github.event.inputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums and release notes
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.apk *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          cat > ../RELEASE_NOTES.md <<'EOF'
+          ## 自动构建产物
+
+          本 Release 由 GitHub Actions 从对应 tag 的源码自动构建,产物与源码严格一致。
+
+          - `pure_print-<tag>-windows-x64.zip`:Windows x64,解压后直接运行 `pure_print.exe`(含全部 DLL 与 `data/`,勿单独拷贝 exe)。
+          - `pure_print-<tag>-arm64.apk`:Android,仅 `arm64-v8a`;安装需允许「未知来源」。
+
+          APK 为自动生成的调试签名,仅供自用/测试;正式分发请自行配置签名密钥。
+          `.docx` / `.xlsx` 为简化排版转换,IPP 客户端针对不同打印机固件可能需要适配。
+
+          ### SHA-256
+
+          ```
+          EOF
+          cat SHA256SUMS.txt >> ../RELEASE_NOTES.md
+          cat >> ../RELEASE_NOTES.md <<'EOF'
+          ```
+
+          校验:`sha256sum -c SHA256SUMS.txt`。源码、许可证与构建说明见仓库 README。
+          EOF
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          files: |
+            dist/*.apk
+            dist/*.zip
+            dist/SHA256SUMS.txt
