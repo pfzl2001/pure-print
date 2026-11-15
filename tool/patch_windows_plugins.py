@@ -123,6 +123,13 @@ def patch_printing(path):
 
 
 def main():
+    # GitHub Windows runner 的 Python stdout 默认是 cp1252,打印中文会抛
+    # UnicodeEncodeError 并把已经成功的补丁误判为失败。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     roots = cache_roots()
     if not roots:
         sys.exit("未找到 pub cache,请先执行 flutter pub get")
@@ -135,7 +142,7 @@ def main():
         print(("PATCHED " if patch_pdfx(p) else "ok      ") + p)
     for p in printing:
         print(("PATCHED " if patch_printing(p) else "ok      ") + p)
-    print("Windows 插件补丁检查完成")
+    print("Windows plugin CMake patch check complete")
 
 
 if __name__ == "__main__":
