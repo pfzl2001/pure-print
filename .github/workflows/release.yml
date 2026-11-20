@@ -130,7 +130,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
           $src = 'build\windows\x64\runner\Release\*'
-          $zip = "out\pure_print-$env:RELEASE_TAG-windows-x64.zip"
+          $zip = "out\pure_print-windows-$env:RELEASE_TAG-x64.zip"
           Compress-Archive -Path $src -DestinationPath $zip -CompressionLevel Optimal
           Get-Item $zip | Select-Object Name, Length
 
@@ -162,7 +162,7 @@ jobs:
 
           本 Release 由 GitHub Actions 从对应 tag 的源码自动构建,产物与源码严格一致。
 
-          - `pure_print-<tag>-windows-x64.zip`:Windows x64,解压后直接运行 `pure_print.exe`(含全部 DLL 与 `data/`,勿单独拷贝 exe)。
+          - `pure_print-windows-<tag>-x64.zip`:Windows x64,解压后直接运行 `pure_print.exe`(含全部 DLL 与 `data/`,勿单独拷贝 exe)。
           - `pure_print-<tag>-arm64.apk`:Android,仅 `arm64-v8a`;安装需允许「未知来源」。
 
           APK 为自动生成的调试签名,仅供自用/测试;正式分发请自行配置签名密钥。
