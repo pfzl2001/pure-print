@@ -1,4 +1,7 @@
-// 本地持久化:默认打印设置、手动添加的打印机、上次使用的打印机、打印历史
+// 本地持久化:默认打印设置、上次使用的(mDNS 自动发现的)打印机、打印历史
+// 手动按 IP 添加的打印机仅保存在本次会话内存中,不写入磁盘。
+// 原因:移动端没有可靠的「应用退出」回调(系统可能直接终止进程),
+// 只有不落盘才能真正等价于「关闭 App 后清除」。
 // 全部数据只存在本机 SharedPreferences,不上传、不联网
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -59,14 +62,21 @@ class AppStore {
     await sp.setString(_kOptions, jsonEncode(o.toJson()));
   }
 
-  static Future<List<String>> loadManualPrinters() async {
+  /// 清理旧版本落盘的手动 IP(一次性迁移,可重复调用)。
+  /// 旧版本还会把手动 IP 写进「上次使用的打印机」,升级后的首次启动一并清掉。
+  /// 新版本不再写 manual_printers,故该条件只在首次迁移时成立,
+  /// 不会误删之后由 mDNS 自动发现设备写入的记忆。
+  static Future<void> clearManualPrinters() async {
     final sp = await SharedPreferences.getInstance();
-    return sp.getStringList(_kPrinters) ?? <String>[];
+    final hadLegacy = sp.containsKey(_kPrinters);
+    await sp.remove(_kPrinters);
+    if (hadLegacy) await sp.remove(_kLastPrinter);
   }
 
-  static Future<void> saveManualPrinters(List<String> hosts) async {
+  /// 清除「上次使用的打印机」,供用户主动清除桌面端已保存的 IP
+  static Future<void> clearLastPrinter() async {
     final sp = await SharedPreferences.getInstance();
-    await sp.setStringList(_kPrinters, hosts);
+    await sp.remove(_kLastPrinter);
   }
 
   static Future<String?> loadLastPrinter() async {

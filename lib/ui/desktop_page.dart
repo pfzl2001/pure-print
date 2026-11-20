@@ -61,11 +61,8 @@ class _DesktopPageState extends State<DesktopPage> {
           ..reverse = false,
       );
     });
-    AppStore.loadLastPrinter().then((host) {
-      if (mounted && host != null && host.isNotEmpty) {
-        _ipController.text = host;
-      }
-    });
+    // 手动输入的 IP 不再持久化:关闭应用后不留痕,下次启动为空。
+    // 需要复用地址时用户可自行填写,或点输入框右侧的清除按钮清空当前值。
   }
 
   @override
@@ -256,7 +253,7 @@ class _DesktopPageState extends State<DesktopPage> {
     });
     _addLog('版式: ${_options.layoutSummary}');
     try {
-      await AppStore.saveLastPrinter(_ipController.text.trim());
+      // 手动输入的 IP 不写入磁盘
       // 不复用低分辨率预览:printFiles 内部按 renderDpi 输出全部纸张
       _addLog('按 ${_options.renderDpi} dpi 全分辨率渲染全部页面…');
       final result = await _service.printFiles(
@@ -670,11 +667,20 @@ class _DesktopPageState extends State<DesktopPage> {
                       flex: 3,
                       child: TextField(
                         controller: _ipController,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'IP 地址',
                           hintText: '例如 192.168.1.100',
                           isDense: true,
-                          border: OutlineInputBorder(),
+                          border: const OutlineInputBorder(),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.clear, size: 18),
+                            tooltip: '清除 IP 并删除已保存的地址',
+                            onPressed: () {
+                              _ipController.clear();
+                              AppStore.clearLastPrinter();
+                              setState(() => _deviceInfo = '未测试连接');
+                            },
+                          ),
                         ),
                         onChanged: (_) => setState(() => _deviceInfo = '未测试连接'),
                       ),

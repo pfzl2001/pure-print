@@ -26,6 +26,7 @@ class _HomePageState extends State<HomePage> {
   final _printService = PrintService();
   final List<DiscoveredPrinter> _printers = [];
   DiscoveredPrinter? _selected;
+  String? _lastPrinterHost; // 仅用于恢复 mDNS 自动发现的设备
   bool _scanning = false;
   final _log = <String>[];
 
@@ -43,6 +44,13 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         if (!_printers.any((p) => p.printer.host == dp.printer.host)) {
           _printers.add(dp);
+        }
+        // 「上次使用的打印机」只对 mDNS 自动发现的设备恢复;手动 IP 不落盘
+        if (_selected == null &&
+            dp.source == 'mDNS' &&
+            _lastPrinterHost != null &&
+            dp.printer.host == _lastPrinterHost) {
+          _selected = dp;
         }
       });
     });
@@ -81,16 +89,10 @@ class _HomePageState extends State<HomePage> {
       _options.reverse = false;
     });
 
-    final ips = await AppStore.loadManualPrinters();
-    final manual = <DiscoveredPrinter>[
-      for (final ip in ips) _discovery.addManual(ip),
-    ];
+    // 手动添加的 IP 不再从磁盘恢复:进程结束后自然消失,不依赖退出回调。
+    // 只保留 mDNS 设备的「上次使用」记忆,由发现流异步匹配后选中。
     final last = await AppStore.loadLastPrinter();
-    if (last != null && mounted) {
-      final dp = manual.where((p) => p.printer.host == last).firstOrNull ??
-          _printers.where((p) => p.printer.host == last).firstOrNull;
-      if (dp != null) setState(() => _selected = dp);
-    }
+    if (mounted) _lastPrinterHost = last;
 
     final wifi = await ShareHandler.wifiInfo();
     if (!mounted) return;
@@ -141,18 +143,16 @@ class _HomePageState extends State<HomePage> {
     );
     if (ip == null || ip.isEmpty) return;
     final dp = _discovery.addManual(ip);
-    _addLog('已手动添加 $ip,正在探测...');
-    final saved = await AppStore.loadManualPrinters();
-    if (!saved.contains(ip)) {
-      saved.add(ip);
-      await AppStore.saveManualPrinters(saved);
-    }
+    _addLog('已手动添加 $ip(仅本次运行有效,退出后自动清除),正在探测...');
     _selectPrinter(dp);
   }
 
   void _selectPrinter(DiscoveredPrinter dp) {
     setState(() => _selected = dp);
-    AppStore.saveLastPrinter(dp.printer.host);
+    // 手动输入的 IP 不写入磁盘,只有自动发现的设备才记忆
+    if (dp.source == 'mDNS') {
+      AppStore.saveLastPrinter(dp.printer.host);
+    }
     _testConnection(dp);
     final pending = _pendingShare;
     if (pending != null) {
@@ -161,6 +161,40 @@ class _HomePageState extends State<HomePage> {
         if (mounted) _handleSharedFiles(pending);
       });
     }
+  }
+
+  /// 移除手动添加的打印机(带确认)。mDNS 自动发现的设备不提供删除:
+  /// 它们会在下次扫描时重新出现,删除没有实际意义。
+  Future<void> _removePrinter(DiscoveredPrinter dp) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('移除打印机'),
+        content: Text('确定移除手动添加的 '
+            '${dp.printer.host}:${dp.printer.port} 吗?\n\n'
+            '手动添加的地址仅保存在本次运行期间,退出应用后会自动清除。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true), child: const Text('移除')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    _discovery.removeManual(dp.printer.host, port: dp.printer.port);
+    final wasSelected = _selected == dp;
+    setState(() {
+      _printers.removeWhere((p) =>
+          p.source == '手动' &&
+          p.printer.host == dp.printer.host &&
+          p.printer.port == dp.printer.port);
+      if (wasSelected) {
+        _selected = _printers.isEmpty ? null : _printers.first;
+      }
+    });
+    if (wasSelected) await AppStore.clearLastPrinter();
+    _addLog('已移除手动添加的打印机 ${dp.printer.host}');
   }
 
   Future<void> _testConnection(DiscoveredPrinter dp) async {
@@ -265,7 +299,9 @@ class _HomePageState extends State<HomePage> {
       _showTip('请先选择打印机');
       return;
     }
-    await AppStore.saveLastPrinter(dp.printer.host);
+    if (dp.source == 'mDNS') {
+      await AppStore.saveLastPrinter(dp.printer.host);
+    }
     if (!mounted) return;
     await Navigator.push<bool>(
       context,
@@ -394,6 +430,11 @@ class _HomePageState extends State<HomePage> {
                   label: const Text('重新扫描')),
             ],
           ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2, bottom: 4),
+            child: Text('手动添加的 IP 仅本次运行有效,退出应用后自动清除;也可在列表中单独移除',
+                style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+          ),
           if (!Platform.isWindows)
             Padding(
               padding: const EdgeInsets.only(top: 2, bottom: 6),
@@ -440,6 +481,13 @@ class _HomePageState extends State<HomePage> {
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (dp.source == '手动')
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline, size: 20),
+                          color: Colors.red[700],
+                          tooltip: '移除手动添加的打印机',
+                          onPressed: () => _removePrinter(dp),
+                        ),
                       IconButton(
                         icon: const Icon(Icons.wifi_tethering),
                         tooltip: '测试连接',

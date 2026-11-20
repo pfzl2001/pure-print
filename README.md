@@ -166,6 +166,7 @@ assets/          中文字体、第三方许可声明
 - 无广告 SDK、无统计埋点、无账号体系、无云端上传。
 - Android 权限仅 `INTERNET`、`ACCESS_NETWORK_STATE`、`ACCESS_WIFI_STATE`、`CHANGE_WIFI_MULTICAST_STATE`。
 - 默认设置与打印历史保存在本机 `SharedPreferences`。
+- **手动按 IP 添加的打印机不落盘**：只保存在本次运行内存，退出应用后自动清除；移动端列表内可单独移除，桌面端 IP 输入框提供清除按钮。仅 mDNS 自动发现的设备会记录「上次使用」以便快速选中。移动端没有可靠的「应用退出」回调，因此采用不持久化而非退出时清理，效果等价且不会漏。
 
 ## 商标与法律声明
 

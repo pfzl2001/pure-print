@@ -61,6 +61,14 @@ class PrinterDiscovery {
     return dp;
   }
 
+  /// 移除手动添加的打印机(仅本次会话;不影响 mDNS 发现结果)
+  void removeManual(String host, {int port = 631}) {
+    final key = '$host:$port';
+    final existing = _found[key];
+    if (existing == null || existing.source != '手动') return;
+    _found.remove(key);
+  }
+
   Future<void> stop() async {
     final d = _discovery;
     _discovery = null;

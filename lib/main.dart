@@ -6,11 +6,20 @@ import 'package:pdf/widgets.dart' as pw;
 import 'dev/selftest.dart';
 import 'office/office_to_pdf.dart';
 import 'share/share_handler.dart';
+import 'storage/app_store.dart';
 import 'ui/desktop_page.dart';
 import 'ui/home_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 迁移旧版本数据:清除此前落盘的手动添加 IP 列表。
+  // 新版本不再持久化手动打印机,启动时清一次即可移除历史残留。
+  try {
+    await AppStore.clearManualPrinters();
+  } catch (_) {
+    // 存储插件未就绪时不影响启动
+  }
 
   // 预加载开源中文字体(Droid Sans Fallback, Apache-2.0),供办公文档转 PDF 使用
   try {
