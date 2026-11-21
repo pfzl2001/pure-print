@@ -235,8 +235,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$GITEE_TOKEN" ]; then
-            echo "GITEE_TOKEN not set, skipping Gitee sync"
-            exit 0
+            echo "::error::GITEE_TOKEN secret 未配置"
+            exit 1
           fi
           APK=$(ls dist/*.apk)
           ZIP=$(ls dist/*.zip)
@@ -266,31 +266,28 @@ jobs:
             "windowsUrl": "$BASE/$ZIP_NAME"
           }
           EOF
-          API="https://gitee.com/api/v5/repos/pfzl12/pure-print-mirror/contents"
-          upload() {
-            local path="$1" file="$2"
-            # base64 正文可达数十 MB,必须写入文件再用 @file 传给 curl,
-            # 不能作为命令行参数(会触发 Argument list too long)。
-            base64 -w0 "$file" > /tmp/gitee_content.b64
-            local sha=""
-            local existing=$(curl -sS -H "Authorization: token $GITEE_TOKEN" \
-              "$API/$path?ref=master")
-            sha=$(printf '%s' "$existing" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("sha","") if isinstance(d,dict) else "")')
-            if [ -n "$sha" ]; then
-              python3 -c 'import json,sys; tag=sys.argv[1]; sha=sys.argv[2]; print(json.dumps({"content":sys.stdin.read(),"sha":sha,"message":"sync "+tag,"branch":"master"}))' "$RELEASE_TAG" "$sha" < /tmp/gitee_content.b64 > /tmp/gitee_payload.json
-            else
-              python3 -c 'import json,sys; tag=sys.argv[1]; print(json.dumps({"content":sys.stdin.read(),"message":"sync "+tag,"branch":"master"}))' "$RELEASE_TAG" < /tmp/gitee_content.b64 > /tmp/gitee_payload.json
-            fi
-            local code=$(curl -sS -o /tmp/gitee_resp.json -w '%{http_code}' -X POST \
-              "$API/$path" -H "Authorization: token $GITEE_TOKEN" \
-              -H 'Content-Type: application/json' \
-              --data-binary @/tmp/gitee_payload.json)
-            if [ "$code" != "201" ] && [ "$code" != "200" ]; then
-              echo "upload $path failed: HTTP $code"; cat /tmp/gitee_resp.json; return 1
-            fi
-            echo "uploaded $path (sha=${sha:-new})"
-          }
-          upload "$APK_NAME" "$APK"
-          upload "$ZIP_NAME" "$ZIP"
-          upload "SHA256SUMS.txt" "SHA256SUMS.txt"
-          upload "version.json" "version.json"
+          # 用 git push 整体同步:22MB 级文件比逐文件 Contents API 稳定,
+          # 且一次提交同时更新全部文件,不会出现半同步状态。
+          ROOT="$PWD"
+          git clone --depth 1 \
+            "https://oauth2:${GITEE_TOKEN}@gitee.com/pfzl12/pure-print-mirror.git" mirror
+          cd mirror
+          git config user.name "pure-print-bot"
+          git config user.email "pure-print-bot@users.noreply.github.com"
+          git config http.postBuffer 524288000
+
+          # 只保留当前版本产物,避免历史版本把仓库撑大
+          rm -f ./*.apk ./*.zip
+          cp "$ROOT/$APK" .
+          cp "$ROOT/$ZIP" .
+          cp "$ROOT/version.json" ./
+          cp "$ROOT/SHA256SUMS.txt" ./
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "mirror already up to date for $RELEASE_TAG"
+            exit 0
+          fi
+          git commit -m "sync $RELEASE_TAG"
+          git push origin HEAD:master
+          echo "pushed $RELEASE_TAG to Gitee"
