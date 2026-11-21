@@ -343,19 +343,38 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Measure Gitee API reachability
+      - name: Probe each Gitee endpoint used by sync
         shell: bash
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -uo pipefail
-          echo "token length: ${#GITEE_TOKEN}"
-          for i in 1 2 3; do
-            curl -sS -o /dev/null -w "attempt$i: http=%{http_code} connect=%{time_connect}s ttfb=%{time_starttransfer}s total=%{time_total}s\n" \
-              --connect-timeout 10 --max-time 30 \
-              -H "Authorization: token $GITEE_TOKEN" \
-              "https://gitee.com/api/v5/repos/pfzl12/pure-print-mirror" \
-              || echo "attempt$i: curl failed rc=$?"
-          done
-          echo "--- DNS ---"
-          getent hosts gitee.com || true
+          AUTH="Authorization: token $GITEE_TOKEN"
+          API="https://gitee.com/api/v5/repos/pfzl12/pure-print-mirror"
+          probe() {
+            local label="$1"; shift
+            local code
+            code=$(curl -sS -o /tmp/probe_body -w '%{http_code} %{time_total}s' \
+              --connect-timeout 10 --max-time 45 "$@" || echo "CURL_FAIL")
+            echo "$label -> $code  body=$(head -c 120 /tmp/probe_body 2>/dev/null | tr -d '\n')"
+          }
+          probe "repo"            -H "$AUTH" "$API"
+          probe "releases"        -H "$AUTH" "$API/releases?per_page=5"
+          probe "release-by-tag"  -H "$AUTH" "$API/releases/tags/v1.8.4"
+          probe "attach-files"    -H "$AUTH" "$API/releases/1341589/attach_files"
+
+          echo "--- 1KB multipart upload ---"
+          head -c 1024 /dev/urandom > /tmp/probe.bin
+          curl -sS -o /tmp/probe_up -w 'upload http=%{http_code} total=%{time_total}s\n' \
+            --connect-timeout 10 --max-time 90 \
+            -H "$AUTH" -F "file=@/tmp/probe.bin" \
+            "$API/releases/1341589/attach_files" || echo "upload curl rc=$?"
+          head -c 200 /tmp/probe_up 2>/dev/null; echo
+          UPID=$(jq -r 'if type=="object" and (.id != null) then .id else "" end' /tmp/probe_up 2>/dev/null)
+          echo "uploaded id=$UPID"
+          if [ -n "$UPID" ]; then
+            curl -sS -o /dev/null -w 'delete http=%{http_code}\n' -H "$AUTH" \
+              -X DELETE "$API/releases/1341589/attach_files/$UPID" || true
+          fi
+          echo "--- jq version ---"
+          jq --version || echo "jq missing"
