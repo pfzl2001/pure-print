@@ -1,4 +1,5 @@
-// 应用内更新:查询 GitHub Releases 最新版本 → 下载 APK → 校验 SHA-256 → 安装
+// 应用内更新:查询最新版本 → 下载 APK → 校验 SHA-256 → 安装。
+// 双源:优先国内静态源(版本信息 + APK 都在国内节点),失败自动回退 GitHub Releases。
 // 只使用 dart:io HttpClient,不引入额外网络库;版本与缓存目录通过原生通道获取。
 // 桌面端同样可查询版本,但只展示发布页信息,不会下载/安装 APK。
 import 'dart:convert';
@@ -12,8 +13,13 @@ const String kReleaseApi =
 const String kReleasePage =
     'https://github.com/pfzl2001/pure-print/releases/latest';
 
+/// 国内静态源:version.json 含版本号、APK 地址与 SHA-256,
+/// 下载链接带 sharecode,由镜像发布工具生成。
+const String kMirrorVersionUrl =
+    'https://pure-print-mirror.app.workbuddy.host/version.json?sharecode=QO4GAJMX7H';
+
 const String _kChannel = 'pure_print/update';
-const String _kFallbackVersion = '1.8.2';
+const String _kFallbackVersion = '1.8.3';
 
 class UpdateInfo {
   final String tag;
@@ -22,6 +28,7 @@ class UpdateInfo {
   final String apkUrl;
   final int size;
   final String checksum;
+  final String source; // '国内加速' / 'GitHub'
 
   const UpdateInfo({
     required this.tag,
@@ -30,6 +37,7 @@ class UpdateInfo {
     required this.apkUrl,
     required this.size,
     required this.checksum,
+    required this.source,
   });
 
   String get sizeText => size <= 0
@@ -65,10 +73,52 @@ class AppUpdater {
       _parseVersion(remote) > _parseVersion(local);
 
   static bool _trustedHost(String host) =>
-      host == 'github.com' || host == 'objects.githubusercontent.com';
+      host == 'github.com' ||
+      host == 'objects.githubusercontent.com' ||
+      host == 'pure-print-mirror.app.workbuddy.host';
 
-  /// 查询最新发布。网络异常、API 限流、资产缺失都会抛异常,由 UI 层展示。
+  /// 查询最新发布:先国内源,失败回退 GitHub。两源都失败才抛异常。
   static Future<UpdateInfo> check() async {
+    try {
+      return await _checkMirror();
+    } catch (_) {
+      return _checkGitHub();
+    }
+  }
+
+  /// 国内静态源:version.json 一次给出版本、APK 地址和校验值,无需 GitHub API。
+  static Future<UpdateInfo> _checkMirror() async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 10);
+    try {
+      final req = await client.getUrl(Uri.parse(kMirrorVersionUrl));
+      req.headers.set('User-Agent', 'PurePrint-App');
+      final resp = await req.close();
+      if (resp.statusCode != 200) throw HttpException('HTTP ${resp.statusCode}');
+      final data = jsonDecode(await utf8.decoder.bind(resp).join())
+          as Map<String, dynamic>;
+      final tag = (data['tag'] as String? ?? '').trim();
+      final apkUrl = Uri.parse(data['apkUrl'] as String? ?? '');
+      if (tag.isEmpty || !_trustedHost(apkUrl.host)) {
+        throw StateError('国内源信息不完整或地址不可信');
+      }
+      return UpdateInfo(
+        tag: tag,
+        version: (data['version'] as String?) ??
+            tag.replaceFirst(RegExp(r'^v'), ''),
+        notes: (data['notes'] as String? ?? '').trim(),
+        apkUrl: apkUrl.toString(),
+        size: (data['apkSize'] as num?)?.toInt() ?? 0,
+        checksum: (data['apkSha256'] as String? ?? '').trim(),
+        source: '国内加速',
+      );
+    } finally {
+      client.close();
+    }
+  }
+
+  /// GitHub Releases 回退源。
+  static Future<UpdateInfo> _checkGitHub() async {
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 12);
     try {
@@ -134,6 +184,7 @@ class AppUpdater {
         apkUrl: url.toString(),
         size: (apk['size'] as num?)?.toInt() ?? 0,
         checksum: checksum,
+        source: 'GitHub',
       );
     } finally {
       client.close();
