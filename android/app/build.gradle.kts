@@ -29,11 +29,29 @@ android {
         versionName = flutter.versionName
     }
 
+    // 正式发布签名:密钥由 CI 通过环境变量注入,不进仓库。
+    // 本地开发未设置环境变量时回退 debug 签名,保证 flutter run --release 可用。
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("PUREPRINT_KEYSTORE_PATH")
+            val storePass = System.getenv("PUREPRINT_STORE_PASSWORD")
+            val keyPass = System.getenv("PUREPRINT_KEY_PASSWORD")
+            if (!keystorePath.isNullOrEmpty() && !storePass.isNullOrEmpty() && !keyPass.isNullOrEmpty()) {
+                storeFile = file(keystorePath)
+                storePassword = storePass
+                keyAlias = "pureprint"
+                keyPassword = keyPass
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (System.getenv("PUREPRINT_KEYSTORE_PATH") != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 

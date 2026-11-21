@@ -19,7 +19,7 @@ const String kMirrorVersionUrl =
     'https://pure-print-mirror.app.workbuddy.host/version.json?sharecode=QO4GAJMX7H';
 
 const String _kChannel = 'pure_print/update';
-const String _kFallbackVersion = '1.8.3';
+const String _kFallbackVersion = '1.8.4';
 
 class UpdateInfo {
   final String tag;

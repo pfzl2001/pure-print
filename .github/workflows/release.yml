@@ -57,6 +57,25 @@ jobs:
           dart run tool/test_drop_files.dart
           dart run tool/test_office_font.dart
 
+      - name: Restore release keystore
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.PUREPRINT_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.PUREPRINT_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.PUREPRINT_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Release signing secrets are not configured"
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/pure-print-release.jks"
+          chmod 600 "$RUNNER_TEMP/pure-print-release.jks"
+          echo "PUREPRINT_KEYSTORE_PATH=$RUNNER_TEMP/pure-print-release.jks" >> "$GITHUB_ENV"
+          echo "PUREPRINT_STORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "PUREPRINT_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+          keytool -list -v -keystore "$RUNNER_TEMP/pure-print-release.jks" \
+            -storepass "$STORE_PASSWORD" -alias pureprint | grep -E 'Owner:|SHA256:' || true
+
       - name: Build arm64 APK
         shell: bash
         run: |
@@ -170,7 +189,8 @@ jobs:
           - `pure_print-windows-<tag>-x64.zip`:Windows x64,解压后直接运行 `pure_print.exe`(含全部 DLL 与 `data/`,勿单独拷贝 exe)。
           - `pure_print-<tag>-arm64.apk`:Android,仅 `arm64-v8a`;安装需允许「未知来源」。
 
-          APK 为自动生成的调试签名,仅供自用/测试;正式分发请自行配置签名密钥。
+          APK 自 v1.8.4 起使用正式签名(CN=pfzl2001, SHA256 11:29:DC:AE:16:05:12:CF:75:F3:03:41:5F:6D:81:75:16:34:14:B0:9F:CA:20:4E:25:72:1B:4C:B2:67:6C:F3)。
+          从 v1.8.0–v1.8.3 的调试签名升级时,系统会拒绝覆盖安装,**必须先卸载旧版再安装新版**(本地设置会丢失)。
           `.docx` / `.xlsx` 为简化排版转换,IPP 客户端针对不同打印机固件可能需要适配。
 
           ### SHA-256
