@@ -337,3 +337,25 @@ jobs:
             git push origin HEAD:master
             echo "pushed metadata for $RELEASE_TAG"
           fi
+
+  probe-gitee:
+    name: Probe Gitee reachability
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Measure Gitee API reachability
+        shell: bash
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -uo pipefail
+          echo "token length: ${#GITEE_TOKEN}"
+          for i in 1 2 3; do
+            curl -sS -o /dev/null -w "attempt$i: http=%{http_code} connect=%{time_connect}s ttfb=%{time_starttransfer}s total=%{time_total}s\n" \
+              --connect-timeout 10 --max-time 30 \
+              -H "Authorization: token $GITEE_TOKEN" \
+              "https://gitee.com/api/v5/repos/pfzl12/pure-print-mirror" \
+              || echo "attempt$i: curl failed rc=$?"
+          done
+          echo "--- DNS ---"
+          getent hosts gitee.com || true
