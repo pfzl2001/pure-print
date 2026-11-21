@@ -222,6 +222,8 @@ jobs:
     needs: [build-android, build-windows]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -247,7 +249,49 @@ jobs:
           # publish job 在手动验证时会被跳过,校验和必须在这里自行生成
           printf '%s  %s\n%s  %s\n' "$APK_SHA" "$APK_NAME" "$ZIP_SHA" "$ZIP_NAME" > SHA256SUMS.txt
           VERSION="${RELEASE_TAG#v}"
-          BASE="https://gitee.com/pfzl12/pure-print-mirror/raw/master"
+          AUTH="Authorization: token $GITEE_TOKEN"
+          API="https://gitee.com/api/v5/repos/pfzl12/pure-print-mirror"
+
+          # Gitee 对 raw 直链的大文件返回 403,二进制必须走 Release 附件
+          # (附件下载链接可匿名访问)。小文件继续放仓库,便于 version.json 直读。
+          REL_ID=$(curl -sS -H "$AUTH" "$API/releases/tags/$RELEASE_TAG" \
+            | jq -r 'if type=="object" and (.id != null) then .id else "" end' 2>/dev/null || echo "")
+          if [ -z "$REL_ID" ]; then
+            REL_ID=$(curl -sS -H "$AUTH" -H 'Content-Type: application/json' -X POST \
+              "$API/releases" -d "$(jq -nc \
+                --arg tag "$RELEASE_TAG" \
+                --arg body "纯净打印 $RELEASE_TAG 国内镜像,由 GitHub Actions 自动同步。" \
+                '{tag_name:$tag, name:$tag, target_commitish:"master", prerelease:false, body:$body}')" \
+              | jq -r 'if type=="object" and (.id != null) then .id else "" end' 2>/dev/null || echo "")
+          fi
+          if [ -z "$REL_ID" ]; then
+            echo "::error::无法创建或获取 Gitee Release $RELEASE_TAG"; exit 1
+          fi
+          echo "Gitee release id = $REL_ID"
+
+          # 同一 tag 重跑会重复上传,先删同名附件再传
+          curl -sS -H "$AUTH" "$API/releases/$REL_ID/attach_files" \
+            | jq -r --arg apk "$APK_NAME" --arg zip "$ZIP_NAME" \
+              '.[]? | select(.name == $apk or .name == $zip) | .id' > /tmp/old_attach_ids
+          while read -r fid; do
+            [ -n "$fid" ] || continue
+            curl -sS -o /dev/null -H "$AUTH" -X DELETE "$API/releases/$REL_ID/attach_files/$fid"
+            echo "removed stale attachment $fid"
+          done < /tmp/old_attach_ids
+
+          upload_asset() {
+            local file="$1" code
+            code=$(curl -sS -o /tmp/attach_resp.json -w '%{http_code}' -H "$AUTH" \
+              -F "file=@$file" "$API/releases/$REL_ID/attach_files")
+            if [ "$code" != "201" ]; then
+              echo "::error::上传 $(basename "$file") 失败 HTTP $code"; cat /tmp/attach_resp.json; return 1
+            fi
+            echo "uploaded $(basename "$file") to Gitee release"
+          }
+          upload_asset "$APK"
+          upload_asset "$ZIP"
+
+          DL_BASE="https://gitee.com/pfzl12/pure-print-mirror/releases/download/$RELEASE_TAG"
           cat > version.json <<EOF
           {
             "tag": "$RELEASE_TAG",
@@ -261,33 +305,28 @@ jobs:
             "notes": "$VERSION 自动发布,已同步 GitHub Release;校验值见 SHA256SUMS.txt。",
             "updated": "$(date -u +%Y-%m-%d)",
             "source": "https://github.com/pfzl2001/pure-print",
-            "baseUrl": "$BASE",
-            "apkUrl": "$BASE/$APK_NAME",
-            "windowsUrl": "$BASE/$ZIP_NAME"
+            "baseUrl": "$DL_BASE",
+            "apkUrl": "$DL_BASE/$APK_NAME",
+            "windowsUrl": "$DL_BASE/$ZIP_NAME"
           }
           EOF
-          # 用 git push 整体同步:22MB 级文件比逐文件 Contents API 稳定,
-          # 且一次提交同时更新全部文件,不会出现半同步状态。
+
+          # 小文件走仓库(git push),避免逐文件 API 与仓库膨胀
           ROOT="$PWD"
           git clone --depth 1 \
             "https://oauth2:${GITEE_TOKEN}@gitee.com/pfzl12/pure-print-mirror.git" mirror
           cd mirror
           git config user.name "pure-print-bot"
           git config user.email "pure-print-bot@users.noreply.github.com"
-          git config http.postBuffer 524288000
-
-          # 只保留当前版本产物,避免历史版本把仓库撑大
           rm -f ./*.apk ./*.zip
-          cp "$ROOT/$APK" .
-          cp "$ROOT/$ZIP" .
           cp "$ROOT/version.json" ./
           cp "$ROOT/SHA256SUMS.txt" ./
-
+          cp "$ROOT/tool/gitee-mirror-index.html" ./index.html
           git add -A
           if git diff --cached --quiet; then
-            echo "mirror already up to date for $RELEASE_TAG"
-            exit 0
+            echo "repo files already up to date"
+          else
+            git commit -m "sync $RELEASE_TAG metadata"
+            git push origin HEAD:master
+            echo "pushed metadata for $RELEASE_TAG"
           fi
-          git commit -m "sync $RELEASE_TAG"
-          git push origin HEAD:master
-          echo "pushed $RELEASE_TAG to Gitee"
