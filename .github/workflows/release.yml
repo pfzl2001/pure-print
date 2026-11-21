@@ -273,7 +273,8 @@ jobs:
             # 不能作为命令行参数(会触发 Argument list too long)。
             base64 -w0 "$file" > /tmp/gitee_content.b64
             local sha=""
-            local existing=$(curl -sS "$API/$path?access_token=$GITEE_TOKEN&ref=master")
+            local existing=$(curl -sS -H "Authorization: token $GITEE_TOKEN" \
+              "$API/$path?ref=master")
             sha=$(printf '%s' "$existing" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("sha","") if isinstance(d,dict) else "")')
             if [ -n "$sha" ]; then
               python3 -c 'import json,sys; tag=sys.argv[1]; sha=sys.argv[2]; print(json.dumps({"content":sys.stdin.read(),"sha":sha,"message":"sync "+tag,"branch":"master"}))' "$RELEASE_TAG" "$sha" < /tmp/gitee_content.b64 > /tmp/gitee_payload.json
@@ -281,7 +282,8 @@ jobs:
               python3 -c 'import json,sys; tag=sys.argv[1]; print(json.dumps({"content":sys.stdin.read(),"message":"sync "+tag,"branch":"master"}))' "$RELEASE_TAG" < /tmp/gitee_content.b64 > /tmp/gitee_payload.json
             fi
             local code=$(curl -sS -o /tmp/gitee_resp.json -w '%{http_code}' -X POST \
-              "$API/$path?access_token=$GITEE_TOKEN" -H 'Content-Type: application/json' \
+              "$API/$path" -H "Authorization: token $GITEE_TOKEN" \
+              -H 'Content-Type: application/json' \
               --data-binary @/tmp/gitee_payload.json)
             if [ "$code" != "201" ] && [ "$code" != "200" ]; then
               echo "upload $path failed: HTTP $code"; cat /tmp/gitee_resp.json; return 1
