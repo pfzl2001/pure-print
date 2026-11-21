@@ -13,7 +13,7 @@
 - **Windows x64**：下载 `pure_print-windows-vX.Y.Z-x64.zip`，解压后直接运行 `pure_print.exe`，无需安装。
 - **Android**：下载 `pure_print-vX.Y.Z-arm64.apk`（仅 arm64-v8a），安装时需允许「未知来源」。
 
-每个 Release 附带 `SHA256SUMS.txt`，可用 `sha256sum -c SHA256SUMS.txt` 校验。APK 为本地调试签名，仅供自用/测试；正式发布请自行配置签名密钥。
+每个 Release 附带 `SHA256SUMS.txt`，可用 `sha256sum -c SHA256SUMS.txt` 校验。APK 自 v1.8.4 起使用正式签名（`CN=pfzl2001`，证书 SHA-256 `1129DCAE…B2676CF3`）；从 v1.8.0–v1.8.3 的调试签名升级必须先卸载旧版。
 
 ### 应用内更新（国内源优先）
 
@@ -23,6 +23,10 @@ Android 版在「关于与法律声明」页提供**检查更新**，采用**双
 2. **GitHub Releases**（自动回退）：国内源不可达时自动切换，保持与源码发布渠道一致。
 
 国内下载入口：<https://pure-print-mirror.app.workbuddy.host/?sharecode=QO4GAJMX7H>（含 Windows 版）。
+
+该镜像由 WorkBuddy 托管的静态目录 `pure-print-mirror` 提供，**每次发版后需要重新发布一次**（整目录覆盖，链接不变），并重新核对 `version.json` 里的 SHA-256 与实际下载文件一致。
+
+> 镜像定位是**国内加速通道，不是归档**：官方未承诺永久有效，也没有 SLA；平台侧调整或主动下线都会使链接失效。权威存档始终是 GitHub Release 与本地 `dist/` 目录，镜像失效时 App 会自动回退到 GitHub。
 
 APK 下载到应用私有缓存，按发布提供的 SHA-256 校验通过后，经 FileProvider 授权由系统安装器安装；已下载且校验通过的文件会复用。Windows 版同样能检查最新版本，但只展示发布页链接，不会自动下载安装。
 
