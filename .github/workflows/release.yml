@@ -216,3 +216,77 @@ jobs:
             dist/*.apk
             dist/*.zip
             dist/SHA256SUMS.txt
+
+  sync-gitee:
+    name: Sync Gitee mirror
+    needs: [publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build mirror files and push to Gitee
+        shell: bash
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo "GITEE_TOKEN not set, skipping Gitee sync"
+            exit 0
+          fi
+          APK=$(ls dist/*.apk)
+          ZIP=$(ls dist/*.zip)
+          APK_NAME=$(basename "$APK")
+          ZIP_NAME=$(basename "$ZIP")
+          APK_SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          ZIP_SHA=$(sha256sum "$ZIP" | cut -d' ' -f1)
+          VERSION="${RELEASE_TAG#v}"
+          BASE="https://gitee.com/pfzl12/pure-print-mirror/raw/master"
+          cat > version.json <<EOF
+          {
+            "tag": "$RELEASE_TAG",
+            "version": "$VERSION",
+            "apk": "$APK_NAME",
+            "apkSha256": "$APK_SHA",
+            "apkSize": $(stat -c%s "$APK"),
+            "windows": "$ZIP_NAME",
+            "windowsSha256": "$ZIP_SHA",
+            "windowsSize": $(stat -c%s "$ZIP"),
+            "notes": "$VERSION 自动发布,已同步 GitHub Release;校验值见 SHA256SUMS.txt。",
+            "updated": "$(date -u +%Y-%m-%d)",
+            "source": "https://github.com/pfzl2001/pure-print",
+            "baseUrl": "$BASE",
+            "apkUrl": "$BASE/$APK_NAME",
+            "windowsUrl": "$BASE/$ZIP_NAME"
+          }
+          EOF
+          cp dist/SHA256SUMS.txt .
+          API="https://gitee.com/api/v5/repos/pfzl12/pure-print-mirror/contents"
+          upload() {
+            local path="$1" file="$2"
+            local b64=$(base64 -w0 "$file")
+            local sha=""
+            local existing=$(curl -sS "$API/$path?access_token=$GITEE_TOKEN&ref=master")
+            sha=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("sha","") if isinstance(d,dict) else "")' "$existing")
+            local payload
+            if [ -n "$sha" ]; then
+              payload=$(python3 -c 'import json,sys;print(json.dumps({"content":sys.argv[1],"sha":sys.argv[2],"message":"sync '"$RELEASE_TAG"'","branch":"master"}))' "$b64" "$sha")
+            else
+              payload=$(python3 -c 'import json,sys;print(json.dumps({"content":sys.argv[1],"message":"sync '"$RELEASE_TAG"'","branch":"master"}))' "$b64")
+            fi
+            local code=$(curl -sS -o /tmp/gitee_resp.json -w '%{http_code}' -X POST \
+              "$API/$path?access_token=$GITEE_TOKEN" -H 'Content-Type: application/json' -d "$payload")
+            if [ "$code" != "201" ] && [ "$code" != "200" ]; then
+              echo "upload $path failed: HTTP $code"; cat /tmp/gitee_resp.json; return 1
+            fi
+            echo "uploaded $path (sha=${sha:-new})"
+          }
+          upload "$APK_NAME" "$APK"
+          upload "$ZIP_NAME" "$ZIP"
+          upload "SHA256SUMS.txt" "SHA256SUMS.txt"
+          upload "version.json" "version.json"
