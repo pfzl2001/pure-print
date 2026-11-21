@@ -231,7 +231,7 @@ jobs:
         shell: bash
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           if [ -z "$GITEE_TOKEN" ]; then
@@ -244,6 +244,8 @@ jobs:
           ZIP_NAME=$(basename "$ZIP")
           APK_SHA=$(sha256sum "$APK" | cut -d' ' -f1)
           ZIP_SHA=$(sha256sum "$ZIP" | cut -d' ' -f1)
+          # publish job 在手动验证时会被跳过,校验和必须在这里自行生成
+          printf '%s  %s\n%s  %s\n' "$APK_SHA" "$APK_NAME" "$ZIP_SHA" "$ZIP_NAME" > SHA256SUMS.txt
           VERSION="${RELEASE_TAG#v}"
           BASE="https://gitee.com/pfzl12/pure-print-mirror/raw/master"
           cat > version.json <<EOF
@@ -264,7 +266,6 @@ jobs:
             "windowsUrl": "$BASE/$ZIP_NAME"
           }
           EOF
-          cp dist/SHA256SUMS.txt .
           API="https://gitee.com/api/v5/repos/pfzl12/pure-print-mirror/contents"
           upload() {
             local path="$1" file="$2"
