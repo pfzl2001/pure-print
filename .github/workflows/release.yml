@@ -219,8 +219,7 @@ jobs:
 
   sync-gitee:
     name: Sync Gitee mirror
-    needs: [publish]
-    if: github.event_name == 'push'
+    needs: [build-android, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
