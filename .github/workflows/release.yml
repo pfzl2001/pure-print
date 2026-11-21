@@ -58,7 +58,11 @@ jobs:
           dart run tool/test_office_font.dart
 
       - name: Build arm64 APK
-        run: flutter build apk --release --split-per-abi --target-platform android-arm64
+        shell: bash
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          flutter build apk --release --split-per-abi --target-platform android-arm64 \
+            --dart-define=APP_VERSION="$VERSION"
 
       - name: Stage artifact
         shell: bash
@@ -123,7 +127,8 @@ jobs:
           $dir = Join-Path $env:RUNNER_TEMP 'pdfium'
           $env:PUREPRINT_LOCAL_PDFIUM = (Join-Path $dir 'pdfium-4690.tgz').Replace('\','/')
           $env:PUREPRINT_LOCAL_PDFIUM_PRINTING = (Join-Path $dir 'pdfium-5200.tgz').Replace('\','/')
-          flutter build windows --release
+          $version = $env:RELEASE_TAG.TrimStart('v')
+          flutter build windows --release --dart-define=APP_VERSION=$version
 
       - name: Package portable zip
         shell: pwsh

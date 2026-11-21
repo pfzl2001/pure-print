@@ -10,6 +10,7 @@ import android.net.NetworkRequest
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.provider.OpenableColumns
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -28,6 +29,7 @@ import java.util.UUID
 class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "pure_print/share"
+        private const val UPDATE_CHANNEL = "pure_print/update"
     }
 
     private var wifiNetwork: Network? = null
@@ -49,8 +51,52 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        // 应用内更新:读版本、提供下载缓存目录、调起系统安装器
+        val updateChannel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UPDATE_CHANNEL)
+        updateChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getAppVersion" -> try {
+                    result.success(packageManager.getPackageInfo(packageName, 0).versionName ?: "")
+                } catch (e: Exception) {
+                    result.error("VERSION_FAILED", e.message, null)
+                }
+                "getCacheDir" -> result.success(cacheDir.absolutePath)
+                "installApk" -> installApk(call.argument<String>("path"), result)
+                else -> result.notImplemented()
+            }
+        }
         // 冷启动分享:Intent 在 Flutter 引擎创建前就已存在
         pendingShare = extractSharedFiles(intent)
+    }
+
+    /** 通过 FileProvider 授权 content:// URI,调起系统安装器完成更新 */
+    private fun installApk(path: String?, result: MethodChannel.Result) {
+        if (path.isNullOrEmpty()) {
+            result.error("INVALID_PATH", "未找到安装包路径", null)
+            return
+        }
+        try {
+            val apk = File(path)
+            if (!apk.exists()) {
+                result.error("NOT_FOUND", "安装包不存在", null)
+                return
+            }
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (intent.resolveActivity(packageManager) == null) {
+                result.error("NO_INSTALLER", "系统未提供安装器", null)
+                return
+            }
+            startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("INSTALL_FAILED", e.message, null)
+        }
     }
 
     /** singleTop 热启动:应用已在后台,再次被分享唤起 */

@@ -15,6 +15,12 @@
 
 每个 Release 附带 `SHA256SUMS.txt`，可用 `sha256sum -c SHA256SUMS.txt` 校验。APK 为本地调试签名，仅供自用/测试；正式发布请自行配置签名密钥。
 
+### 应用内更新
+
+Android 版在「关于与法律声明」页提供**检查更新**：从本项目 GitHub Releases API 获取最新版本，显示版本与说明后可直接下载并安装。APK 下载到应用私有缓存，按该发布的 `SHA256SUMS.txt` 校验通过后，经 FileProvider 授权由系统安装器安装；已下载且校验通过的文件会复用，不重复消耗流量。Windows 版同样能检查最新版本，但只展示发布页链接，不会自动下载安装。
+
+> 检查更新需要当前 WiFi 能访问互联网。App 为保证局域网打印稳定，会把进程绑定到 WiFi；若该 WiFi 仅用于连接打印机而无外网，检查更新会失败并给出提示，切换到可上网的网络后重试即可。
+
 如需自行构建，见下方「构建」章节。
 
 ---
@@ -164,7 +170,7 @@ assets/          中文字体、第三方许可声明
 
 - 文件全程在本机处理，打印数据仅发往用户自己填写的局域网打印机 IP，**不经过任何第三方服务器**。
 - 无广告 SDK、无统计埋点、无账号体系、无云端上传。
-- Android 权限仅 `INTERNET`、`ACCESS_NETWORK_STATE`、`ACCESS_WIFI_STATE`、`CHANGE_WIFI_MULTICAST_STATE`。
+- Android 权限仅 `INTERNET`、`ACCESS_NETWORK_STATE`、`ACCESS_WIFI_STATE`、`CHANGE_WIFI_MULTICAST_STATE`、`REQUEST_INSTALL_PACKAGES`（应用内更新安装 APK 所需）。
 - 默认设置与打印历史保存在本机 `SharedPreferences`。
 - **手动按 IP 添加的打印机不落盘**：只保存在本次运行内存，退出应用后自动清除；移动端列表内可单独移除，桌面端 IP 输入框提供清除按钮。仅 mDNS 自动发现的设备会记录「上次使用」以便快速选中。移动端没有可靠的「应用退出」回调，因此采用不持久化而非退出时清理，效果等价且不会漏。
 
