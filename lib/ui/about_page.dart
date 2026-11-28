@@ -158,7 +158,8 @@ class _AboutPageState extends State<AboutPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('发现新版本 ${_update!.tag} · ${_update!.sizeText}',
+                      Text('发现新版本 ${_update!.tag} · ${_update!.sizeText}'
+                          ' · ${_update!.source}',
                           style: const TextStyle(
                               fontSize: 13, fontWeight: FontWeight.w500)),
                       const SizedBox(height: 6),
