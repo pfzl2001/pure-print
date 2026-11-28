@@ -189,10 +189,26 @@ class EsclClient {
 
   EsclDevice? resolved(String host) => _resolved[host];
 
-  HttpClient _http() => HttpClient()
-    ..connectionTimeout = const Duration(seconds: 8)
-    // 打印机普遍使用自签证书,必须放行
-    ..badCertificateCallback = (cert, host, port) => true;
+  Socket? _activeSocket;
+  bool _cancelRequested = false;
+
+  /// 取消正在进行的扫描(由 UI 的「取消扫描」按钮调用)。
+  void cancel() {
+    _cancelRequested = true;
+    _activeSocket?.destroy();
+  }
+
+  /// 打印机普遍使用自签证书;且 eSCL 的 NextDocument 是长轮询,
+  /// 默认 15s 的 idleTimeout 会掐断等待中的连接,必须放大。
+  HttpClient _http() {
+    final c = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8)
+      ..idleTimeout = const Duration(seconds: 300)
+      ..autoUncompress = false;
+    c.badCertificateCallback =
+        (X509Certificate cert, String host, int port) => true;
+    return c;
+  }
 
   Future<_Resp> _send(
     String method,
@@ -205,6 +221,7 @@ class EsclClient {
     try {
       final req = await client.openUrl(method, uri);
       req.headers.set(HttpHeaders.userAgentHeader, 'PurePrint/1.0');
+      req.headers.set('Accept-Encoding', 'identity');
       if (contentType != null) {
         req.headers.contentType = ContentType.parse(contentType);
       }
@@ -223,8 +240,245 @@ class EsclClient {
       throw EsclException('请求超时 ($method ${uri.path})');
     } on HandshakeException catch (e) {
       throw EsclException('TLS 握手失败: ${e.message}');
+    } on HttpException catch (e) {
+      throw EsclException('HTTP 连接异常: ${e.message}');
     } finally {
       client.close(force: true);
+    }
+  }
+
+  /// eSCL 的 NextDocument 用 chunked 流式返回:L3350 会立刻回 200 + 响应头,
+  /// 然后边扫描边发送图像数据,**发完并不发 chunked 结束块、也不关闭连接**。
+  /// 因此不能等 Stream 自然结束(fold/forEach 会一直挂起直到超时),
+  /// 必须边收边判断文档结束标记:JPEG 看 FFD9、PDF 看 %%EOF,命中即主动结束。
+  bool _documentComplete(Uint8List b, String format) {
+    if (b.length < 4) return false;
+    if (format == 'application/pdf') {
+      final start = b.length > 1024 ? b.length - 1024 : 0;
+      return latin1
+          .decode(b.sublist(start), allowInvalid: true)
+          .contains('%%EOF');
+    }
+    // JPEG 的 FFD9 只在文件结尾出现(熵编码里 FF 后必跟 00 做字节填充)。
+    // 只扫尾部若干字节:既避开 O(n²) 全量扫描,又能容忍 chunk 边界 /
+    // 打印机在 EOI 之后追加的 chunk 头字节。
+    final start = b.length > 64 ? b.length - 64 : 0;
+    for (var i = start; i + 1 < b.length; i++) {
+      if (b[i] == 0xFF && b[i + 1] == 0xD9) return true;
+    }
+    return false;
+  }
+
+  /// 按分辨率估算兜底超时(实际靠文档结束标记提前返回)。
+  /// L3350 在 200dpi 彩色 A4 全幅下实测波动很大:快时 16 秒,慢时超过
+  /// 180 秒(扫描头归位/预热/并发任务都会影响),旧版 120 秒超时必然失败。
+  /// 界面已提供「取消扫描」,兜底给足也不影响体验。
+  Duration _scanTimeout(ScanParams p) => Duration(
+        seconds: p.resolution >= 1200
+            ? 900
+            : p.resolution >= 600
+                ? 600
+                : p.resolution >= 300
+                    ? 420
+                    : 300,
+      );
+
+  int _indexOf(List<int> b, List<int> pat, int from) {
+    for (var i = from; i + pat.length <= b.length; i++) {
+      var ok = true;
+      for (var j = 0; j < pat.length; j++) {
+        if (b[i + j] != pat[j]) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) return i;
+    }
+    return -1;
+  }
+
+  /// 用原始 socket 取回 NextDocument。
+  ///
+  /// 该机型的 chunked 响应结束后不发终止块、也不在 keep-alive 下关连接,
+  /// dart:io 的 HttpClientResponse 流会永久挂起(实测 120s/180s 都超时),
+  /// 而 Python/系统打印栈能正常收尾。因此这里自己发 HTTP、自己解析 chunk,
+  /// 并以 JPEG 的 FFD9 / PDF 的 %%EOF 作为结束条件,不再等待连接关闭。
+  Future<Uint8List> _fetchDocument(
+    Uri uri,
+    String format, {
+    required Duration totalTimeout,
+    void Function(int received)? onChunk,
+  }) async {
+    final Socket socket;
+    try {
+      socket = uri.scheme == 'https'
+          ? await SecureSocket.connect(
+              uri.host,
+              uri.port,
+              onBadCertificate: (X509Certificate c) => true,
+              timeout: const Duration(seconds: 8),
+            )
+          : await Socket.connect(uri.host, uri.port,
+              timeout: const Duration(seconds: 8));
+    } on SocketException catch (e) {
+      throw EsclException('连接扫描仪失败: ${e.message}');
+    }
+    _activeSocket = socket;
+
+    final raw = <int>[];
+    final doc = BytesBuilder();
+    var pos = 0;
+    // 0 HTTP 头 / 1 chunk 大小行 / 2 chunk 数据 / 3 chunk 尾 CRLF
+    // 4 Content-Length 响应体 / 5 无长度(靠连接关闭或 EOI)
+    var state = 0;
+    var chunkRemaining = 0;
+    var contentLength = -1;
+
+    final path = uri.path + (uri.hasQuery ? '?${uri.query}' : '');
+    socket.write('GET $path HTTP/1.1\r\n'
+        'Host: ${uri.authority}\r\n'
+        'User-Agent: PurePrint/1.0\r\n'
+        'Accept-Encoding: identity\r\n'
+        'Connection: close\r\n\r\n');
+    await socket.flush();
+
+    // 增量状态机:打印机会把一个大 chunk 拆成多个 TCP 包、中间停顿很久,
+    // 必须"到多少消费多少",不能等整块数据齐了才处理。
+    bool parse() {
+      while (true) {
+        switch (state) {
+          case 0:
+            final i = _indexOf(raw, const [13, 10, 13, 10], pos);
+            if (i < 0) return false;
+            final head = latin1.decode(raw.sublist(0, i), allowInvalid: true);
+            final status = int.tryParse(RegExp(r'HTTP/\d\.\d\s+(\d+)')
+                        .firstMatch(head)
+                        ?.group(1) ??
+                    '0') ??
+                0;
+            if (status != 200) {
+              throw EsclException('取回扫描图像失败 HTTP $status');
+            }
+            final lower = head.toLowerCase();
+            final m = RegExp(r'content-length:\s*(\d+)').firstMatch(lower);
+            contentLength = m == null ? -1 : int.parse(m.group(1)!);
+            pos = i + 4;
+            state = lower.contains('transfer-encoding: chunked')
+                ? 1
+                : (contentLength >= 0 ? 4 : 5);
+            break;
+          case 1:
+            final e = _indexOf(raw, const [13, 10], pos);
+            if (e < 0) return false;
+            final line =
+                latin1.decode(raw.sublist(pos, e), allowInvalid: true);
+            final size =
+                int.tryParse(line.split(';').first.trim(), radix: 16) ?? -1;
+            pos = e + 2;
+            if (size <= 0) return true;
+            chunkRemaining = size;
+            state = 2;
+            break;
+          case 2:
+            if (pos >= raw.length) return false;
+            final avail = raw.length - pos;
+            final take = chunkRemaining < avail ? chunkRemaining : avail;
+            doc.add(raw.sublist(pos, pos + take));
+            pos += take;
+            chunkRemaining -= take;
+            onChunk?.call(doc.length);
+            if (_documentComplete(doc.toBytes(), format)) return true;
+            if (chunkRemaining > 0) return false;
+            state = 3;
+            break;
+          case 3:
+            if (raw.length - pos < 2) return false;
+            pos += 2;
+            state = 1;
+            break;
+          case 4:
+            final need = contentLength - doc.length;
+            if (need > 0) {
+              final avail = raw.length - pos;
+              if (avail <= 0) return false;
+              final take = need < avail ? need : avail;
+              doc.add(raw.sublist(pos, pos + take));
+              pos += take;
+              onChunk?.call(doc.length);
+              if (doc.length < contentLength) return false;
+            }
+            return true;
+          default:
+            if (raw.length > pos) {
+              doc.add(raw.sublist(pos));
+              pos = raw.length;
+              onChunk?.call(doc.length);
+            }
+            return _documentComplete(doc.toBytes(), format);
+        }
+      }
+    }
+
+    final done = Completer<Uint8List>();
+    Timer? timer;
+    StreamSubscription<List<int>>? sub;
+    void finish([Object? error]) {
+      if (done.isCompleted) return;
+      timer?.cancel();
+      sub?.cancel();
+      socket.destroy();
+      if (_cancelRequested) {
+        done.completeError(EsclException('扫描已取消'));
+      } else if (error != null) {
+        done.completeError(error);
+      } else {
+        final b = doc.toBytes();
+        if (b.isEmpty) {
+          done.completeError(EsclException('扫描图像为空'));
+        } else {
+          done.complete(b);
+        }
+      }
+    }
+
+    sub = socket.listen(
+      (d) {
+        if (done.isCompleted) return;
+        raw.addAll(d);
+        try {
+          if (parse()) finish();
+        } catch (e) {
+          finish(e);
+        }
+      },
+      onError: (Object e) => finish(e is SocketException
+          ? EsclException('网络连接失败: ${e.message}')
+          : e),
+      onDone: () => finish(),
+      cancelOnError: true,
+    );
+    timer = Timer(totalTimeout, () {
+      finish(TimeoutException('扫描超时', totalTimeout));
+    });
+    try {
+      return await done.future;
+    } on TimeoutException {
+      throw EsclException('扫描超时 (GET ${uri.path})');
+    } finally {
+      timer.cancel();
+      if (identical(_activeSocket, socket)) _activeSocket = null;
+      socket.destroy();
+    }
+  }
+
+  /// 清理打印机侧任务。DELETE 在本机型上可能要 8–10 秒,给足余量并重试一次,
+  /// 否则残留 job 会让下次创建任务返回 503。
+  Future<void> _deleteJob(Uri job) async {
+    for (var i = 0; i < 2; i++) {
+      try {
+        await _send('DELETE', job, timeout: const Duration(seconds: 30));
+        return;
+      } catch (_) {}
     }
   }
 
@@ -372,6 +626,9 @@ class EsclClient {
       contentType: 'text/xml; charset=utf-8',
       timeout: const Duration(seconds: 30),
     );
+    if (created.status == 503) {
+      throw EsclException('扫描仪忙(可能有上次未完成的任务),请稍等几秒后重试');
+    }
     if (created.status != 201 && created.status != 200) {
       final detail = utf8.decode(created.body, allowMalformed: true);
       throw EsclException('创建扫描任务失败 HTTP ${created.status}'
@@ -391,21 +648,26 @@ class EsclClient {
             path: loc,
           );
 
+    _cancelRequested = false;
     try {
-      onProgress?.call('正在扫描,请稍候(平板扫描通常 10–30 秒)...');
+      onProgress?.call('正在扫描,请稍候(平板扫描通常 10–60 秒)...');
       final next = job.replace(path: '${job.path}/NextDocument');
-      final got = await _send(
-        'GET',
+      var lastLogged = 0;
+      final bytes = await _fetchDocument(
         next,
-        timeout: const Duration(seconds: 120),
+        p.documentFormat,
+        totalTimeout: _scanTimeout(p),
+        onChunk: (n) {
+          if (n - lastLogged >= 65536) {
+            lastLogged = n;
+            onProgress?.call('已接收 ${(n / 1024).toStringAsFixed(0)} KB…');
+          }
+        },
       );
-      if (got.status != 200) {
-        throw EsclException('取回扫描图像失败 HTTP ${got.status}');
-      }
-      if (got.body.isEmpty) throw EsclException('扫描图像为空');
-      onProgress?.call('已取回扫描结果 (${(got.body.length / 1024).toStringAsFixed(0)} KB)');
+      if (bytes.isEmpty) throw EsclException('扫描图像为空');
+      onProgress?.call('已取回扫描结果 (${(bytes.length / 1024).toStringAsFixed(0)} KB)');
       return ScanResult(
-        bytes: got.body,
+        bytes: bytes,
         mimeType: p.documentFormat,
         width: (p.width ?? (8.2677 * p.resolution).round())
             .clamp(c.minWidth, c.maxWidth),
@@ -413,10 +675,8 @@ class EsclClient {
             .clamp(c.minHeight, c.maxHeight),
       );
     } finally {
-      // 无论成功失败都清理任务,避免打印机侧堆积 job
-      try {
-        await _send('DELETE', job, timeout: const Duration(seconds: 10));
-      } catch (_) {}
+      // 无论成功失败都清理任务,避免打印机侧堆积 job(残留会导致下次 503)
+      await _deleteJob(job);
     }
   }
 }

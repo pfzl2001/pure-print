@@ -1,6 +1,7 @@
 // 扫描页:发现 eSCL 扫描仪 → 读取能力 → 设置参数 → 扫描 → 预览 / 保存 / 送去打印
 // 使用标准 eSCL(AirScan / Mopria)协议,不依赖任何厂商 SDK
 import 'package:material_ui/material_ui.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../ipp/ipp_client.dart';
 import '../print/print_service.dart';
@@ -8,6 +9,13 @@ import '../scan/escl_client.dart';
 import '../scan/escl_discovery.dart';
 import '../scan/scan_files.dart';
 import 'print_settings_page.dart';
+
+// 扫描设置记忆:下次进入扫描页自动恢复上次选择
+const String _kPrefResolution = 'scan_resolution';
+const String _kPrefColorMode = 'scan_color_mode';
+const String _kPrefFormat = 'scan_document_format';
+const String _kPrefIntent = 'scan_intent';
+const String _kPrefCompression = 'scan_compression';
 
 class ScanPage extends StatefulWidget {
   final IppPrinter? printer;
@@ -39,10 +47,12 @@ class _ScanPageState extends State<ScanPage> {
   final TextEditingController _ipController = TextEditingController();
   bool _busy = false;
   bool _scanning = false;
+  late final Future<void> _prefsReady;
 
   @override
   void initState() {
     super.initState();
+    _prefsReady = _loadPrefs();
     _discovery.stream.listen((d) {
       if (!mounted) return;
       setState(() {
@@ -53,6 +63,51 @@ class _ScanPageState extends State<ScanPage> {
       if (_selected == null) _select(d);
     });
     _startDiscovery();
+  }
+
+  /// 启动时恢复上次保存的扫描设置。直接改 _params 即可,
+  /// 后续 _select() 会用设备能力校验合法性(_syncParams)后再刷新界面。
+  Future<void> _loadPrefs() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      _params.resolution = p.getInt(_kPrefResolution) ?? _params.resolution;
+      _params.colorMode = p.getString(_kPrefColorMode) ?? _params.colorMode;
+      _params.documentFormat =
+          p.getString(_kPrefFormat) ?? _params.documentFormat;
+      _params.intent = p.getString(_kPrefIntent) ?? _params.intent;
+      _params.compressionFactor =
+          p.getInt(_kPrefCompression) ?? _params.compressionFactor;
+    } catch (_) {}
+  }
+
+  Future<void> _savePrefs() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setInt(_kPrefResolution, _params.resolution);
+      await p.setString(_kPrefColorMode, _params.colorMode);
+      await p.setString(_kPrefFormat, _params.documentFormat);
+      await p.setString(_kPrefIntent, _params.intent);
+      await p.setInt(_kPrefCompression, _params.compressionFactor);
+    } catch (_) {}
+  }
+
+  Future<void> _resetSettings() async {
+    setState(() {
+      _params.resolution = 200;
+      _params.colorMode = 'RGB24';
+      _params.documentFormat = 'image/jpeg';
+      _params.intent = 'TextAndGraphic';
+      _params.compressionFactor = 2;
+      final c = _caps;
+      if (c != null) _syncParams(c);
+    });
+    await _savePrefs();
+    _addLog('已恢复默认扫描设置');
+  }
+
+  void _cancelScan() {
+    _client.cancel();
+    _addLog('正在取消扫描…');
   }
 
   @override
@@ -91,6 +146,7 @@ class _ScanPageState extends State<ScanPage> {
 
   Future<void> _select(EsclDevice d) async {
     if (_busy || _scanning) return;
+    await _prefsReady;
     setState(() {
       _selected = d;
       _caps = null;
@@ -107,7 +163,11 @@ class _ScanPageState extends State<ScanPage> {
         _selected = used;
       });
       _syncParams(caps);
+      await _savePrefs();
       _addLog('✅ ${caps.summary}');
+      _addLog('扫描设置: ${_params.resolution} dpi · '
+          '${EsclCapabilities.colorLabel(_params.colorMode)} · '
+          '${_params.documentFormat}');
       _addLog('端点: ${used.uri("ScannerCapabilities")}');
       final state = await _client.status(used);
       _addLog('设备状态: $state');
@@ -176,7 +236,8 @@ class _ScanPageState extends State<ScanPage> {
       _addLog('✅ 扫描完成: ${r.sizeText} · ${r.width}×${r.height}');
       _addLog('已保存到: $path');
     } catch (e) {
-      _addLog('❌ 扫描失败: $e');
+      final msg = e.toString();
+      _addLog(msg.contains('扫描已取消') ? '已取消扫描' : '❌ 扫描失败: $e');
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
@@ -324,32 +385,50 @@ class _ScanPageState extends State<ScanPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(12, 10, 12, 2),
-            child: Text('扫描设置', style: TextStyle(fontWeight: FontWeight.bold)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+            child: Row(
+              children: [
+                const Text('扫描设置',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: _scanning || _busy ? null : _resetSettings,
+                  icon: const Icon(Icons.restore, size: 16),
+                  label: const Text('恢复默认', style: TextStyle(fontSize: 12)),
+                ),
+              ],
+            ),
           ),
           _dropdown<int>(
             label: '分辨率',
             value: _params.resolution,
             items: resolutions,
             text: (v) => '$v dpi',
-            onChanged: (v) => setState(() => _params.resolution = v ?? 200),
+            onChanged: (v) {
+              setState(() => _params.resolution = v ?? 200);
+              _savePrefs();
+            },
           ),
           _dropdown<String>(
             label: '色彩模式',
             value: _params.colorMode,
             items: modes,
             text: EsclCapabilities.colorLabel,
-            onChanged: (v) =>
-                setState(() => _params.colorMode = v ?? 'RGB24'),
+            onChanged: (v) {
+              setState(() => _params.colorMode = v ?? 'RGB24');
+              _savePrefs();
+            },
           ),
           _dropdown<String>(
             label: '输出格式',
             value: _params.documentFormat,
             items: formats,
             text: (v) => v == 'application/pdf' ? 'PDF 文档' : 'JPEG 图片',
-            onChanged: (v) =>
-                setState(() => _params.documentFormat = v ?? 'image/jpeg'),
+            onChanged: (v) {
+              setState(() => _params.documentFormat = v ?? 'image/jpeg');
+              _savePrefs();
+            },
           ),
           _dropdown<String>(
             label: '内容类型',
@@ -362,8 +441,10 @@ class _ScanPageState extends State<ScanPage> {
                   'Preview' => '预览',
                   _ => v,
                 },
-            onChanged: (v) =>
-                setState(() => _params.intent = v ?? 'TextAndGraphic'),
+            onChanged: (v) {
+              setState(() => _params.intent = v ?? 'TextAndGraphic');
+              _savePrefs();
+            },
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 2, 12, 10),
@@ -483,15 +564,9 @@ class _ScanPageState extends State<ScanPage> {
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: _scanning || _busy ? null : _startScan,
-                icon: _scanning
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.document_scanner),
-                label: Text(_scanning ? '扫描中…' : '开始扫描'),
+                onPressed: _scanning ? _cancelScan : (_busy ? null : _startScan),
+                icon: Icon(_scanning ? Icons.close : Icons.document_scanner),
+                label: Text(_scanning ? '取消扫描' : '开始扫描'),
               ),
             ),
             _buildResult(),
