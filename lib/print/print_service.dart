@@ -645,11 +645,22 @@ class PrintService {
   }) async {
     if (paths.isEmpty) throw ArgumentError('没有选择文件');
     onProgress?.call('正在连接打印机...');
-    final (caps, endpoint) = await _client.getCapabilities(printer);
-    onProgress?.call(
-      '已连接: ${caps.makeAndModel.isEmpty ? endpoint.host : caps.makeAndModel}'
-      ' (${endpoint.transport == IppTransport.upgrade ? "TLS 升级" : "IPP"} ${endpoint.host}:${endpoint.port})',
-    );
+    IppPrinter endpoint;
+    try {
+      final (caps, ep) = await _client.getCapabilities(printer);
+      endpoint = ep;
+      onProgress?.call(
+        '已连接: ${caps.makeAndModel.isEmpty ? endpoint.host : caps.makeAndModel}'
+        ' (${endpoint.transport == IppTransport.upgrade ? "TLS 升级" : "IPP"} '
+        '${endpoint.host}:${endpoint.port}${endpoint.path})',
+      );
+    } catch (e) {
+      // Get-Printer-Attributes 是可选能力,不少机型只实现 Print-Job。
+      // 以前探测失败就直接放弃打印;现在继续尝试提交任务,
+      // printJob 内部会重新遍历并校验 IPP 响应。
+      onProgress?.call('能力探测未通过($e),仍尝试直接提交打印任务...');
+      endpoint = _client.lastGood(printer.host) ?? printer;
+    }
 
     final output =
         sheets ??

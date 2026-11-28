@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 应用内更新下载的 APK 放在私有缓存的 updates/ 目录 -->
     <cache-path name="updates" path="updates/" />
+    <!-- eSCL 扫描结果保存在私有缓存的 scans/ 目录,供系统分享 -->
+    <cache-path name="scans" path="scans/" />
 </paths>

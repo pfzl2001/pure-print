@@ -233,15 +233,21 @@ class _PrintSettingsPageState extends State<PrintSettingsPage> {
     builder: (_, sheets, _) {
       if (sheets.isEmpty) {
         if (_busy) {
-          return const Padding(
-            padding: EdgeInsets.all(24),
+          return Padding(
+            padding: const EdgeInsets.all(24),
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 10),
-                  Text('正在生成第 1 张预览…', style: TextStyle(fontSize: 12)),
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 10),
+                  const Text('正在生成第 1 张预览…', style: TextStyle(fontSize: 12)),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _cancelPreview,
+                    icon: const Icon(Icons.close, size: 18),
+                    label: const Text('取消预览'),
+                  ),
                 ],
               ),
             ),
@@ -255,12 +261,18 @@ class _PrintSettingsPageState extends State<PrintSettingsPage> {
               children: [
                 Icon(Icons.preview, size: 34, color: Colors.grey[400]),
                 const SizedBox(height: 8),
-                const Text('点击「生成预览」查看排版效果', style: TextStyle(fontSize: 13)),
+                const Text('生成预览,查看排版效果', style: TextStyle(fontSize: 13)),
                 const SizedBox(height: 4),
                 Text(
                   '按需生成 · 首张秒出 · 可随时取消\n预览不会减慢打开页面的速度',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                ),
+                const SizedBox(height: 12),
+                FilledButton.tonalIcon(
+                  onPressed: _printing ? null : _generatePreview,
+                  icon: const Icon(Icons.preview, size: 18),
+                  label: const Text('生成预览'),
                 ),
               ],
             ),
@@ -340,6 +352,19 @@ class _PrintSettingsPageState extends State<PrintSettingsPage> {
               ),
             ],
           ),
+          Center(
+            child: _busy
+                ? TextButton.icon(
+                    onPressed: _cancelPreview,
+                    icon: const Icon(Icons.close, size: 18),
+                    label: const Text('停止生成'),
+                  )
+                : TextButton.icon(
+                    onPressed: _printing ? null : _generatePreview,
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('重新生成预览'),
+                  ),
+          ),
         ],
       );
     },
@@ -411,7 +436,8 @@ class _PrintSettingsPageState extends State<PrintSettingsPage> {
                 dense: true,
                 leading: const Icon(Icons.print),
                 title: Text(_printerName),
-                subtitle: Text('${widget.printer.host}:${widget.printer.port}'),
+                subtitle: Text(
+                    '${widget.printer.host}:${widget.printer.port}${widget.printer.path}'),
               ),
             ),
             const SizedBox(height: 10),
@@ -510,38 +536,25 @@ class _PrintSettingsPageState extends State<PrintSettingsPage> {
               ),
             ),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _printing
-                        ? null
-                        : (_busy ? _cancelPreview : _generatePreview),
-                    icon: Icon(_busy ? Icons.close : Icons.preview),
-                    label: Text(_busy ? '取消预览' : '生成预览'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton.icon(
-                    // 预览是可选的:没预览也能直接打印,正在预览则先中止再打印
-                    onPressed: _printing
-                        ? null
-                        : () async {
-                            if (_busy) _cancelPreview();
-                            await _startPrint();
-                          },
-                    icon: _printing
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.print),
-                    label: Text(_printing ? '打印中…' : '开始打印'),
-                  ),
-                ),
-              ],
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                // 预览是可选的:没预览也能直接打印,正在预览则先中止再打印
+                onPressed: _printing
+                    ? null
+                    : () async {
+                        if (_busy) _cancelPreview();
+                        await _startPrint();
+                      },
+                icon: _printing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.print),
+                label: Text(_printing ? '打印中…' : '开始打印'),
+              ),
             ),
             if (_failed)
               Padding(

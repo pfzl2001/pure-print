@@ -30,6 +30,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "pure_print/share"
         private const val UPDATE_CHANNEL = "pure_print/update"
+        private const val SCAN_CHANNEL = "pure_print/scan"
     }
 
     private var wifiNetwork: Network? = null
@@ -66,8 +67,56 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        // 扫描:eSCL 结果的私有缓存目录 + FileProvider 分享
+        val scanChannel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SCAN_CHANNEL)
+        scanChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getScanDir" -> result.success(
+                    File(cacheDir, "scans").apply { mkdirs() }.absolutePath
+                )
+                "shareFile" -> shareFile(
+                    call.argument<String>("path"),
+                    call.argument<String>("mime"),
+                    result
+                )
+                else -> result.notImplemented()
+            }
+        }
         // 冷启动分享:Intent 在 Flutter 引擎创建前就已存在
         pendingShare = extractSharedFiles(intent)
+    }
+
+    /** 通过 FileProvider 把扫描件交给系统分享面板(不申请外部存储权限) */
+    private fun shareFile(path: String?, mime: String?, result: MethodChannel.Result) {
+        if (path.isNullOrEmpty()) {
+            result.error("INVALID_PATH", "未找到扫描件路径", null)
+            return
+        }
+        try {
+            val file = File(path)
+            if (!file.exists()) {
+                result.error("NOT_FOUND", "扫描件不存在", null)
+                return
+            }
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = mime ?: "image/jpeg"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(intent, "分享扫描件").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (chooser.resolveActivity(packageManager) == null) {
+                result.error("NO_SHARE_TARGET", "系统未提供分享目标", null)
+                return
+            }
+            startActivity(chooser)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("SHARE_FAILED", e.message, null)
+        }
     }
 
     /** 通过 FileProvider 授权 content:// URI,调起系统安装器完成更新 */

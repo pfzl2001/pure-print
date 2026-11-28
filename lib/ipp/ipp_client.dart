@@ -115,6 +115,12 @@ class PrinterStateInfo {
 class IppClient {
   int _requestId = 1;
 
+  /// 同一台打印机上次成功连通的端点(port / path / transport)。
+  /// 后续请求优先复用,避免每次都从失败组合开始遍历。
+  final Map<String, IppPrinter> _lastGood = {};
+
+  IppPrinter? lastGood(String host) => _lastGood[host];
+
   /// 查询设备状态、打印队列与墨量(marker-levels)
   Future<PrinterStateInfo> getPrinterState(IppPrinter printer) async {
     final body = _encode(
@@ -208,27 +214,79 @@ class IppClient {
     return b.toBytes();
   }
 
-  /// 从(可能含两层 HTTP 头的)响应中提取 IPP 报文体
+  static bool _matches(Uint8List b, int at, List<int> sep) {
+    if (at + sep.length > b.length) return false;
+    for (var k = 0; k < sep.length; k++) {
+      if (b[at + k] != sep[k]) return false;
+    }
+    return true;
+  }
+
+  /// 跳过 HTTP chunked 编码的 `<hex size>[;ext]\r\n` 行。
+  /// 嵌入式 IPP 服务器常用 chunked 返回,长度行会挡在 IPP magic 前面。
+  static int _skipChunkHeader(Uint8List b, int p) {
+    var q = p;
+    bool isHex(int c) =>
+        (c >= 0x30 && c <= 0x39) ||
+        (c >= 0x41 && c <= 0x46) ||
+        (c >= 0x61 && c <= 0x66);
+    while (q < b.length && isHex(b[q])) {
+      q++;
+    }
+    if (q == p) return p;
+    if (q < b.length && b[q] == 0x3B) {
+      // chunk 扩展
+      while (q < b.length && b[q] != 13 && b[q] != 10) {
+        q++;
+      }
+    }
+    if (q + 1 < b.length && b[q] == 13 && b[q + 1] == 10) return q + 2;
+    if (q < b.length && b[q] == 10) return q + 1;
+    return p;
+  }
+
+  /// 生成可读的坏响应诊断,避免只抛一句「没有 IPP 报文」无从排查。
+  static String _describeBadResponse(Uint8List resp) {
+    final preview = resp.take(160).toList();
+    final hex = preview
+        .take(16)
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join(' ');
+    final text = latin1
+        .decode(preview, allowInvalid: true)
+        .replaceAll(RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1f]'), '.');
+    final firstLine = text.split('\n').first.trim();
+    return '响应中没有 IPP 报文 (长度=${resp.length}, '
+        '前16字节=[$hex], 首行="$firstLine")';
+  }
+
+  /// 从(可能含两层 HTTP 头 / chunked / LF-only 分隔的)响应中提取 IPP 报文体。
+  /// 兼容:
+  ///  - 外层 UPnP 200 + 内层 IPP 200 的双层头
+  ///  - HTTP/1.1 chunked 传输编码
+  ///  - 只用 \n 分隔的非标准嵌入式服务器
+  ///  - 上游已剥离 HTTP 头、直接给出 IPP body 的情况
   Uint8List _extractIpp(Uint8List resp) {
-    for (var i = 0; i + 5 < resp.length; i++) {
-      if (resp[i] == 13 &&
-          resp[i + 1] == 10 &&
-          resp[i + 2] == 13 &&
-          resp[i + 3] == 10 &&
-          resp[i + 4] == 0x01 &&
-          resp[i + 5] == 0x01) {
-        return Uint8List.sublistView(resp, i + 4);
+    const crlfcrlf = [13, 10, 13, 10];
+    const lflf = [10, 10];
+    for (final sep in <List<int>>[crlfcrlf, lflf]) {
+      for (var i = 0; i + sep.length + 1 < resp.length; i++) {
+        if (!_matches(resp, i, sep)) continue;
+        final p = _skipChunkHeader(resp, i + sep.length);
+        if (p + 1 < resp.length && resp[p] == 0x01 && resp[p + 1] == 0x01) {
+          return Uint8List.sublistView(resp, p);
+        }
       }
     }
-    for (var i = 0; i + 3 < resp.length; i++) {
-      if (resp[i] == 13 &&
-          resp[i + 1] == 10 &&
-          resp[i + 2] == 13 &&
-          resp[i + 3] == 10) {
-        return Uint8List.sublistView(resp, i + 4);
+    // 兜底:整段直接找 IPP magic(0x01 0x01 + 状态/操作码高字节)。
+    // 高字节 0x00 = successful/operation,0x04/0x05 = IPP 错误状态,
+    // 二者都是合法 IPP 报文,不能因为状态码非 0 就漏掉。
+    for (var i = 0; i + 9 < resp.length; i++) {
+      if (resp[i] == 0x01 && resp[i + 1] == 0x01 && resp[i + 2] <= 0x05) {
+        return Uint8List.sublistView(resp, i);
       }
     }
-    throw IppException('响应中没有 IPP 报文');
+    throw IppException(_describeBadResponse(resp));
   }
 
   (int, Map<String, List<Object>>) _parse(Uint8List data) {
@@ -307,9 +365,12 @@ class IppClient {
     await socket.flush();
     await ready.future.timeout(const Duration(seconds: 8));
     final head = latin1.decode(buf.toBytes(), allowInvalid: true);
-    if (!head.contains('101')) {
+    final statusLine = head.split('\r\n').first;
+    // 收紧判断:以前只要响应里任意位置出现 "101" 就误判(如 Content-Length: 1010),
+    // 会在明文连接上强行做 TLS 握手,拿回来的自然不是 IPP 报文。
+    if (!RegExp(r'^HTTP/\d\.\d\s+101\b').hasMatch(statusLine)) {
       socket.destroy();
-      throw IppException('TLS 升级协商失败: ${head.split('\r\n').first}');
+      throw IppException('TLS 升级协商失败: $statusLine');
     }
 
     final secure = await SecureSocket.secure(socket,
@@ -329,7 +390,7 @@ class IppClient {
     }
     final resp = await secure
         .fold<BytesBuilder>(BytesBuilder(), (bb, d) => bb..add(d))
-        .timeout(const Duration(seconds: 60));
+        .timeout(const Duration(seconds: 20));
     await secure.close();
     return resp.toBytes();
   }
@@ -347,14 +408,20 @@ class IppClient {
       req.headers.set(HttpHeaders.connectionHeader, 'close');
       req.contentLength = body.length;
       req.add(body);
-      final response = await req.close().timeout(const Duration(seconds: 60));
+      final response = await req.close().timeout(const Duration(seconds: 20));
       final all = await response
           .fold<BytesBuilder>(BytesBuilder(), (bb, c) => bb..add(c));
       if (response.statusCode != 200) {
         throw IppException('HTTP ${response.statusCode}',
             statusCode: response.statusCode);
       }
-      return all.toBytes();
+      final bytes = all.toBytes();
+      // 嵌入式 Web 服务器常对未知 IPP 路径返回 200 + 空 body / HTML 管理页,
+      // 这类响应不能当成连接成功,否则会中断后续组合的尝试。
+      if (bytes.isEmpty) {
+        throw IppException('HTTP 200 但响应体为空(IPP 路径可能不正确)');
+      }
+      return bytes;
     } finally {
       client.close(force: true);
     }
@@ -367,15 +434,23 @@ class IppClient {
     void addEp(IppPrinter p) {
       if (seenEp.add('${p.port}|${p.path}')) endpoints.add(p);
     }
+
+    // 1) 上次成功连通的端点最优先(避免每次都从失败组合开始)
+    final good = _lastGood[printer.host];
+    if (good != null) addEp(good);
+    // 2) 发现阶段给出的端点(path 可能来自 mDNS TXT 的 rp)
     addEp(printer);
+    // 3) 常见 IPP 路径兜底
     addEp(printer.copyWith(port: 631, path: '/ipp/print'));
+    addEp(printer.copyWith(port: 631, path: '/ipp/printer'));
     addEp(printer.copyWith(port: 631, path: '/ipp'));
+    addEp(printer.copyWith(port: 631, path: '/'));
 
     final errors = <String>[];
     var first = true;
     for (final ep in endpoints) {
       final modes = <IppTransport>[
-        printer.transport,
+        ep.transport,
         IppTransport.upgrade,
         IppTransport.tls,
         IppTransport.plain,
@@ -383,13 +458,18 @@ class IppClient {
       final seenMode = <IppTransport>{};
       for (final mode in modes) {
         if (!seenMode.add(mode)) continue;
-        if (!first) await Future.delayed(const Duration(milliseconds: 500));
+        if (!first) await Future.delayed(const Duration(milliseconds: 300));
         first = false;
         final p = ep.copyWith(transport: mode);
         try {
           final bytes = mode == IppTransport.upgrade
               ? await _postUpgrade(p, body)
               : await _postHttp(p, body, mode == IppTransport.tls);
+          // 关键修复:HTTP 200 ≠ 拿到了 IPP 报文。先校验,不合法就当失败
+          // 继续尝试下一个组合;以前会在这里直接 return,导致真正可用的
+          // 连接方式根本没机会尝试,表现为「能搜到打印机却连不上」。
+          _extractIpp(bytes);
+          _lastGood[p.host] = p;
           return (bytes, p);
         } catch (e) {
           errors.add('${p.endpoint} → $e');

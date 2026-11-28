@@ -14,6 +14,7 @@ import 'about_page.dart';
 import 'history_page.dart';
 import 'layout_editor.dart';
 import 'print_settings_page.dart';
+import 'scan_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -358,6 +359,19 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _openScanPage() async {
+    await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ScanPage(
+          printer: _selected?.printer,
+          defaults: _options.copy(),
+          onSaveDefault: _applyOptions,
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     ShareHandler.onFiles = null;
@@ -477,7 +491,8 @@ class _HomePageState extends State<HomePage> {
                 child: ListTile(
                   leading: const Icon(Icons.print),
                   title: Text(dp.printer.name.isEmpty ? dp.printer.host : dp.printer.name),
-                  subtitle: Text('${dp.printer.host}:${dp.printer.port} · ${dp.source}'),
+                  subtitle: Text(
+                      '${dp.printer.host}:${dp.printer.port}${dp.printer.path} · ${dp.source}'),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -516,6 +531,11 @@ class _HomePageState extends State<HomePage> {
           _contentButton(Icons.picture_as_pdf, '打印 PDF', ContentType.pdf),
           _contentButton(Icons.description, '办公文档', ContentType.office),
           _contentButton(Icons.settings_applications, '系统打印', null),
+          FilledButton.tonalIcon(
+            onPressed: _openScanPage,
+            icon: const Icon(Icons.document_scanner),
+            label: const Text('扫描'),
+          ),
         ],
       ),
     );

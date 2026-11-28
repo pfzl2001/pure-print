@@ -44,9 +44,10 @@ APK 下载到应用私有缓存，按发布提供的 SHA-256 校验通过后，�
 | 导入 | 文件选择、Android「分享到 / 用其他应用打开」、Windows 整窗拖放（支持拖入文件夹递归展开、格式过滤、去重） |
 | 设备 | mDNS 自动发现 `_ipp._tcp`、手动输入 IP/端口、能力探测、设备状态与墨量查询 |
 | 打印 | IPP `Print-Job` 直连；份数、彩色/黑白、双面、纸张；系统打印服务兜底；导出排版 PDF |
+| 扫描 | **标准 eSCL / AirScan（Mopria）**：mDNS 发现 `_uscan._tcp` / `_uscans._tcp`、读取能力、设置分辨率/色彩/格式、平板扫描；结果可预览、保存/分享、直接送去打印。**不需要任何厂商 SDK** |
 | 版式 | A4/A3/A5/Letter/4×6/自定义纸张、横竖方向、自定义网格、页边距/格间距 mm、完整显示 / 铺满裁切、内容缩放 %、上下位置 %、每格边框、渲染 DPI |
 | 页面选择 | 页码范围（如 `1-3,5`、`2-`）、奇数页 / 偶数页 / 全部、逆序输出（便于手动双面） |
-| 预览 | **按需触发**：点击「生成预览」后首张即时显示，其余逐张流式追加；72dpi 缩略图 + 后台 isolate 拼版；可随时取消 |
+| 预览 | **按需触发**：预览区内直接点「生成预览」，首张即时显示、其余逐张流式追加；生成中可随时取消，生成后可原地重新生成；72dpi 缩略图 + 后台 isolate 拼版 |
 | 其他 | 默认设置持久化、打印历史（仅本机）、关于与法律声明、完整第三方许可证清单 |
 
 > 预览与打印使用**同一套版式代码**，仅光栅化精度不同：预览 72dpi，打印按设置（默认 200dpi）全分辨率重新渲染全部页面。因此「不预览直接打印」也是完整功能路径。
@@ -160,6 +161,7 @@ dart run tool/test_office_font.dart   # 办公文档中文渲染
 lib/
   ipp/           IPP/1.1 客户端（RFC 2817 TLS 升级、双层 HTTP 响应解析、Print-Job、状态查询）
   discovery/     mDNS 发现与手动添加
+  scan/          eSCL/AirScan 扫描客户端、mDNS 发现、结果落盘与系统分享
   print/         渲染管线、版式拼版、页码范围、文件类型、拖入整理、系统打印
   office/        docx/xlsx → PDF 简化转换（zip + xml 解析）
   ui/            移动端设置页、Windows 三栏工作台、共享版式控件、关于/历史
@@ -175,6 +177,14 @@ assets/          中文字体、第三方许可声明
 
 `.docx` / `.xlsx` 采用简化解析（文本、表格、段落顺序）生成 PDF，**不追求与 Office/WPS 像素级一致**；复杂版式请先用 Office 导出为 PDF 再打印。
 
+### 扫描：标准 eSCL / AirScan
+
+扫描走公开标准 **eSCL 2.9（Mopria Certified Scan 1.5）**，不依赖任何厂商私有 SDK 或二进制：mDNS 发现 `_uscan._tcp` / `_uscans._tcp`，读取 TXT 中的 `rs` 资源路径（本机实测为 `eSCL`），经 HTTPS（自签证书需放行）依次调用 `ScannerCapabilities`、`ScannerStatus`、`ScanJobs`、`NextDocument`，完成后 `DELETE` 清理任务。
+
+已在 **EPSON L3350 Series** 实机端到端验证：100/200/300/600/1200 dpi、`BlackAndWhite1`/`Grayscale8`/`RGB24`、`image/jpeg`/`application/pdf`、平板（Platen）A4 全幅。该机型的 `_uscan` 服务实际指向 `:443` 且只接受 HTTPS，因此客户端会按 scheme/port 组合做候选回退，不能只按服务类型判断。
+
+也可在项目根目录用纯 Dart 诊断脚本验证：`dart --packages=.dart_tool/package_config.json tool/escl_probe.dart <打印机IP> [--scan]`（不带 `--scan` 时只读能力，不触发扫描）。
+
 ---
 
 ## 隐私与权限
@@ -183,11 +193,12 @@ assets/          中文字体、第三方许可声明
 - 无广告 SDK、无统计埋点、无账号体系、无云端上传。
 - Android 权限仅 `INTERNET`、`ACCESS_NETWORK_STATE`、`ACCESS_WIFI_STATE`、`CHANGE_WIFI_MULTICAST_STATE`、`REQUEST_INSTALL_PACKAGES`（应用内更新安装 APK 所需）。
 - 默认设置与打印历史保存在本机 `SharedPreferences`。
+- 扫描数据同样只发往用户自己选择的局域网扫描仪；扫描件保存在 App 私有缓存 `cacheDir/scans/`，通过 `FileProvider` 授权给系统分享面板，**不申请外部存储权限、不写入公共目录、不上传**。
 - **手动按 IP 添加的打印机不落盘**：只保存在本次运行内存，退出应用后自动清除；移动端列表内可单独移除，桌面端 IP 输入框提供清除按钮。仅 mDNS 自动发现的设备会记录「上次使用」以便快速选中。移动端没有可靠的「应用退出」回调，因此采用不持久化而非退出时清理，效果等价且不会漏。
 
 ## 商标与法律声明
 
-- IPP / mDNS / AirPrint 等为公开标准；AirPrint、Epson 及各打印机品牌名称与商标归各自权利人所有。
+- IPP / mDNS / AirPrint / eSCL(AirScan) / Mopria 等为公开标准；AirPrint、Mopria、Epson 及各打印机品牌名称与商标归各自权利人所有。
 - 本项目仅实现协议互操作，**不是任何厂商的官方产品**，也未提供官方背书。
 - 未使用任何第三方商业打印应用的代码、资源、界面、文案或商标；未绕过任何会员、授权或服务端校验。
 - 软件按「现状」提供，不附带适销性或特定用途适用性的担保。公开发布或商用前请自行补充隐私政策、应用商店合规材料并进行正式法律审查。
